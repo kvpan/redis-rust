@@ -1,40 +1,38 @@
 #![allow(unused_imports)]
-use std::{
-    io::{Read, Write},
+use std::io::{Read, Write};
+
+use anyhow::Context;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
 
-use anyhow::Context;
-
-fn main() -> anyhow::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:6379").context("Failed to bind to address")?;
-
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:6379").await?;
     println!("Server listening on 127.0.0.1:6379");
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(mut stream) => loop {
-                let mut buf = [0; 1024];
-
-                let n = stream
+    loop {
+        let (mut socket, _addr) = listener.accept().await?;
+        tokio::spawn(async move {
+            let mut buf = [0; 1024];
+            loop {
+                let n = socket
                     .read(&mut buf)
-                    .context("Failed to read from stream")?;
+                    .await
+                    .expect("Failed to read from socket");
 
                 if n == 0 {
-                    break;
+                    return;
                 }
 
                 println!("Received: {:?}", &buf[..n]);
 
-                stream
+                socket
                     .write_all(b"+PONG\r\n")
-                    .context("Failed to write to stream")?;
-            },
-            Err(e) => {
-                eprintln!("Error accepting connection: {}", e);
+                    .await
+                    .expect("Failed to write to socket");
             }
-        }
+        });
     }
-
-    Ok(())
 }
