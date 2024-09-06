@@ -13,19 +13,23 @@ fn main() -> anyhow::Result<()> {
 
     for stream in listener.incoming() {
         match stream {
-            Ok(mut stream) => {
+            Ok(mut stream) => loop {
                 let mut buf = [0; 1024];
 
                 let n = stream
                     .read(&mut buf)
                     .context("Failed to read from stream")?;
 
+                if n == 0 {
+                    break;
+                }
+
                 println!("Received: {:?}", &buf[..n]);
 
                 stream
                     .write_all(b"+PONG\r\n")
                     .context("Failed to write to stream")?;
-            }
+            },
             Err(e) => {
                 eprintln!("Error accepting connection: {}", e);
             }
