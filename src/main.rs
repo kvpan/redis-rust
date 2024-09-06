@@ -1,17 +1,36 @@
 #![allow(unused_imports)]
-use std::net::TcpListener;
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+};
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+use anyhow::Context;
+
+fn main() -> anyhow::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:6379").context("Failed to bind to address")?;
+
+    println!("Server listening on 127.0.0.1:6379");
 
     for stream in listener.incoming() {
         match stream {
-            Ok(_stream) => {
-                println!("accepted new connection");
+            Ok(mut stream) => {
+                let mut buf = [0; 1024];
+
+                let n = stream
+                    .read(&mut buf)
+                    .context("Failed to read from stream")?;
+
+                println!("Received: {:?}", &buf[..n]);
+
+                stream
+                    .write_all(b"+PONG\r\n")
+                    .context("Failed to write to stream")?;
             }
             Err(e) => {
-                println!("error: {}", e);
+                eprintln!("Error accepting connection: {}", e);
             }
         }
     }
+
+    Ok(())
 }
