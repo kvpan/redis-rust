@@ -7,10 +7,14 @@ use tokio::{
     net::TcpListener,
 };
 
+mod resp;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
-    println!("Server listening on 127.0.0.1:6379");
+    tracing::info!("Server listening on 127.0.0.1:6379");
 
     loop {
         let (mut socket, _addr) = listener.accept().await?;
@@ -20,18 +24,20 @@ async fn main() -> anyhow::Result<()> {
                 let n = socket
                     .read(&mut buf)
                     .await
-                    .expect("Failed to read from socket");
+                    .context("Failed to read from socket")
+                    .unwrap();
 
                 if n == 0 {
                     return;
                 }
 
-                println!("Received: {:?}", &buf[..n]);
+                tracing::info!("Received: {:?}", &buf[..n]);
 
                 socket
                     .write_all(b"+PONG\r\n")
                     .await
-                    .expect("Failed to write to socket");
+                    .context("Failed to write to socket")
+                    .unwrap();
             }
         });
     }
