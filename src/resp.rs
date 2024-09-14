@@ -64,14 +64,15 @@ fn parse_integer(input: &[u8]) -> Result<RespValue, Error> {
 
     let mut data = String::new();
     let mut i = 0;
-    while i < input.len() {
+    while i < input.len() - 2 {
         data.push(input[i] as char);
         i += 1;
     }
 
     let integer = data
         .parse::<i64>()
-        .map_err(|_| Error::UnexpectedToken(data))?;
+        .map_err(|_| Error::InvalidInteger(data))?;
+
     Ok(RespValue::Integer(integer))
 }
 
@@ -81,6 +82,8 @@ pub enum Error {
     UnexpectedEOF,
     #[error("unexpected token: {0}")]
     UnexpectedToken(String),
+    #[error("invalid integer: {0}")]
+    InvalidInteger(String),
 }
 
 #[cfg(test)]
@@ -113,5 +116,50 @@ mod tests {
         let input = b"+OK\n";
         let parsed = parse(input);
         assert_eq!(parsed, Err(Error::UnexpectedEOF));
+    }
+
+    #[test]
+    fn test_parse_error() {
+        let input = b"-Error message\r\n";
+        let parsed = parse(input).unwrap();
+        assert_eq!(parsed, RespValue::Error("Error message".to_string()));
+    }
+
+    #[test]
+    fn test_parse_error_with_newline() {
+        let input = b"-Error message\n";
+        let parsed = parse(input);
+        assert_eq!(parsed, Err(Error::UnexpectedEOF));
+    }
+
+    #[test]
+    fn test_parse_positive_integer() {
+        let input = b":123\r\n";
+        let parsed = parse(input).unwrap();
+        assert_eq!(parsed, RespValue::Integer(123));
+    }
+
+    #[test]
+    fn test_parse_negative_integer() {
+        let input = b":-123\r\n";
+        let parsed = parse(input).unwrap();
+        assert_eq!(parsed, RespValue::Integer(-123));
+    }
+
+    #[test]
+    fn test_parse_integer_with_newline() {
+        let input = b":123\n";
+        let parsed = parse(input);
+        assert_eq!(parsed, Err(Error::UnexpectedEOF));
+    }
+
+    #[test]
+    fn test_parse_integer_overflow() {
+        let input = b":9223372036854775808\r\n";
+        let parsed = parse(input);
+        assert_eq!(
+            parsed,
+            Err(Error::InvalidInteger("9223372036854775808".to_string()))
+        );
     }
 }
