@@ -1,89 +1,115 @@
-use std::str::FromStr;
-
 use thiserror::Error;
 
-/// The possible values of a RESP protocol payload
-#[derive(Debug, PartialEq, Eq)]
+struct Cursor<'a> {
+    input: &'a [u8],
+    position: usize,
+}
+
+impl<'a> Cursor<'a> {
+    pub fn new(input: &'a [u8]) -> Self {
+        Self { input, position: 0 }
+    }
+
+    pub fn read(&mut self, n: usize) -> Result<&'a [u8], Error> {
+        if self.position + n > self.input.len() {
+            return Err(Error::UnexpectedEOF);
+        }
+        let slice = &self.input[self.position..self.position + n];
+        self.position += n;
+        Ok(slice)
+    }
+
+    pub fn read_byte(&mut self) -> Result<u8, Error> {
+        if self.position >= self.input.len() {
+            return Err(Error::UnexpectedEOF);
+        }
+        let byte = self.input[self.position];
+        self.position += 1;
+        Ok(byte)
+    }
+
+    pub fn read_line(&mut self) -> Result<&'a [u8], Error> {
+        let start = self.position;
+        while self.position < self.input.len() - 1 {
+            if self.input[self.position] == b'\r' && self.input[self.position + 1] == b'\n' {
+                let line = &self.input[start..self.position];
+                self.position += 2;
+                return Ok(line);
+            }
+            self.position += 1;
+        }
+        Err(Error::UnexpectedEOF)
+    }
+
+    pub fn read_string(&mut self) -> Result<String, Error> {
+        let line = self.read_line()?;
+        String::from_utf8(line.to_vec())
+            .map_err(|_| Error::InvalidInput(format!("'{:?}' is not a valid UTF-8 sequence", line)))
+    }
+
+    pub fn read_integer(&mut self) -> Result<i64, Error> {
+        let line = self.read_line()?;
+        let integer = std::str::from_utf8(line)
+            .map_err(|_| Error::InvalidInput(format!("'{:?}' is not a valid UTF-8 sequence", line)))
+            .and_then(|s| {
+                s.parse::<i64>().map_err(|_| {
+                    Error::InvalidInput(format!("'{:?}' is not a valid integer", line))
+                })
+            })?;
+        Ok(integer)
+    }
+}
+
 pub enum RespValue {
     SimpleString(String),
     Error(String),
     Integer(i64),
+    BulkString(String),
+    Null,
 }
 
-/// Parse the binary input as a sequence of ASCII characters encoded in resp2 protocol
 pub fn parse(input: &[u8]) -> Result<RespValue, Error> {
-    let first_char = input.first().ok_or(Error::UnexpectedEOF)?;
-    match first_char {
-        b'+' => parse_simple_string(&input[1..]),
-        b'-' => parse_error(&input[1..]),
-        b':' => parse_integer(&input[1..]),
-        _ => Err(Error::UnexpectedToken(
-            String::from_utf8_lossy(&[*first_char]).to_string(),
-        )),
+    let mut cursor = Cursor::new(input);
+    let first_byte = cursor.read_byte()? as char;
+    match first_byte {
+        '+' => {
+            let string = cursor.read_string()?;
+            Ok(RespValue::SimpleString(string))
+        }
+        '-' => {
+            let string = cursor.read_string()?;
+            Ok(RespValue::Error(string))
+        }
+        ':' => {
+            let integer = cursor.read_integer()?;
+            Ok(RespValue::Integer(integer))
+        }
+        '$' => {
+            // TODO: Handle the case where the length is too large
+            let len = cursor.read_integer()?;
+            if len == -1 {
+                Ok(RespValue::Null)
+            } else {
+                let data = cursor.read(len as usize)?;
+                let string = std::str::from_utf8(data).map_err(|_| {
+                    Error::InvalidInput(format!("'{:?}' is not a valid UTF-8 sequence", data))
+                })?;
+                Ok(RespValue::BulkString(string.to_string()))
+            }
+        }
+        _ => Err(Error::InvalidInput(format!(
+            "unexpected first byte: {}",
+            first_byte
+        ))),
     }
 }
 
-/// Parse a simple string consuming the input until \r\n
-fn parse_simple_string(input: &[u8]) -> Result<RespValue, Error> {
-    parse_simple_bitstring(input).map(RespValue::SimpleString)
-}
-
-/// Parse an error consuming the input until \r\n
-/// TODO: parse the error prefix and message
-fn parse_error(input: &[u8]) -> Result<RespValue, Error> {
-    parse_simple_bitstring(input).map(RespValue::Error)
-}
-
-fn parse_simple_bitstring(input: &[u8]) -> Result<String, Error> {
-    if input.is_empty() {
-        return Err(Error::UnexpectedEOF);
-    }
-
-    if input[input.len() - 2..] != [b'\r', b'\n'] {
-        return Err(Error::UnexpectedEOF);
-    }
-
-    let mut data = String::new();
-    let mut i = 0;
-    while i < input.len() - 2 {
-        data.push(input[i] as char);
-        i += 1;
-    }
-
-    Ok(data)
-}
-
-fn parse_integer(input: &[u8]) -> Result<RespValue, Error> {
-    if input.is_empty() {
-        return Err(Error::UnexpectedEOF);
-    }
-
-    if input[input.len() - 2..] != [b'\r', b'\n'] {
-        return Err(Error::UnexpectedEOF);
-    }
-
-    let mut data = String::new();
-    let mut i = 0;
-    while i < input.len() - 2 {
-        data.push(input[i] as char);
-        i += 1;
-    }
-
-    let integer = data
-        .parse::<i64>()
-        .map_err(|_| Error::InvalidInteger(data))?;
-
-    Ok(RespValue::Integer(integer))
-}
-
-#[derive(Error, Debug, PartialEq, Eq)]
+#[derive(Error, Debug)]
 pub enum Error {
     #[error("unexpected EOF")]
     UnexpectedEOF,
-    #[error("unexpected token: {0}")]
-    UnexpectedToken(String),
-    #[error("invalid integer: {0}")]
-    InvalidInteger(String),
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }
 
 #[cfg(test)]
@@ -91,75 +117,290 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_empty() {
-        let input = b"";
-        let parsed = parse(input);
-        assert_eq!(parsed, Err(Error::UnexpectedEOF));
+    fn cursor_new() {
+        let input = b"hello";
+        let cursor = Cursor::new(input);
+        assert_eq!(cursor.position, 0);
+        assert_eq!(cursor.input, input);
     }
 
     #[test]
-    fn test_parse_unexpected_token() {
-        let input = b"?";
-        let parsed = parse(input);
-        assert_eq!(parsed, Err(Error::UnexpectedToken("?".to_string())));
+    fn read_byte_success() {
+        let input = b"ab";
+        let mut cursor = Cursor::new(input);
+
+        assert_eq!(cursor.read_byte().unwrap(), b'a');
+        assert_eq!(cursor.position, 1);
+
+        assert_eq!(cursor.read_byte().unwrap(), b'b');
+        assert_eq!(cursor.position, 2);
     }
 
     #[test]
-    fn test_parse_simple_string() {
-        let input = b"+OK\r\n";
-        let parsed = parse(input).unwrap();
-        assert_eq!(parsed, RespValue::SimpleString("OK".to_string()));
+    fn read_byte_eof() {
+        let input = b"a";
+        let mut cursor = Cursor::new(input);
+
+        assert_eq!(cursor.read_byte().unwrap(), b'a');
+        assert_eq!(cursor.position, 1);
+
+        assert!(matches!(cursor.read_byte(), Err(Error::UnexpectedEOF)));
+        assert_eq!(cursor.position, 1);
     }
 
     #[test]
-    fn test_parse_simple_string_with_newline() {
-        let input = b"+OK\n";
-        let parsed = parse(input);
-        assert_eq!(parsed, Err(Error::UnexpectedEOF));
+    fn read_line_success() {
+        let input = b"hello\r\nworld\r\n";
+        let mut cursor = Cursor::new(input);
+
+        assert_eq!(cursor.read_line().unwrap(), b"hello");
+        assert_eq!(cursor.position, 7);
+
+        assert_eq!(cursor.read_line().unwrap(), b"world");
+        assert_eq!(cursor.position, 14);
     }
 
     #[test]
-    fn test_parse_error() {
+    fn read_line_no_crlf() {
+        let input = b"hello";
+        let mut cursor = Cursor::new(input);
+
+        assert!(matches!(cursor.read_line(), Err(Error::UnexpectedEOF)));
+        assert_eq!(cursor.position, 4);
+    }
+
+    #[test]
+    fn read_line_empty() {
+        let input = b"\r\n";
+        let mut cursor = Cursor::new(input);
+
+        assert_eq!(cursor.read_line().unwrap(), b"");
+        assert_eq!(cursor.position, 2);
+    }
+
+    #[test]
+    fn read_string_success() {
+        let input = "hello\r\nworld\r\n".as_bytes();
+        let mut cursor = Cursor::new(input);
+
+        assert_eq!(cursor.read_string().unwrap(), "hello");
+        assert_eq!(cursor.position, 7);
+
+        assert_eq!(cursor.read_string().unwrap(), "world");
+        assert_eq!(cursor.position, 14);
+    }
+
+    #[test]
+    fn read_string_empty() {
+        let input = "\r\n".as_bytes();
+        let mut cursor = Cursor::new(input);
+
+        assert_eq!(cursor.read_string().unwrap(), "");
+        assert_eq!(cursor.position, 2);
+    }
+
+    #[test]
+    fn read_string_invalid_utf8() {
+        let input = &[0xFF, b'\r', b'\n'];
+        let mut cursor = Cursor::new(input);
+
+        match cursor.read_string() {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(msg.contains("is not a valid UTF-8 sequence"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+        assert_eq!(cursor.position, 3);
+    }
+
+    #[test]
+    fn read_string_eof() {
+        let input = "hello".as_bytes();
+        let mut cursor = Cursor::new(input);
+
+        assert!(matches!(cursor.read_string(), Err(Error::UnexpectedEOF)));
+        assert_eq!(cursor.position, 4);
+    }
+
+    #[test]
+    fn read_integer_success() {
+        let input = "42\r\n-123\r\n0\r\n".as_bytes();
+        let mut cursor = Cursor::new(input);
+
+        assert_eq!(cursor.read_integer().unwrap(), 42);
+        assert_eq!(cursor.position, 4);
+
+        assert_eq!(cursor.read_integer().unwrap(), -123);
+        assert_eq!(cursor.position, 10);
+
+        assert_eq!(cursor.read_integer().unwrap(), 0);
+        assert_eq!(cursor.position, 13);
+    }
+
+    #[test]
+    fn read_integer_invalid_input() {
+        let input = "not_a_number\r\n".as_bytes();
+        let mut cursor = Cursor::new(input);
+
+        match cursor.read_integer() {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(msg.contains("is not a valid integer"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+        assert_eq!(cursor.position, 14);
+    }
+
+    #[test]
+    fn read_integer_empty() {
+        let input = "\r\n".as_bytes();
+        let mut cursor = Cursor::new(input);
+
+        match cursor.read_integer() {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(msg.contains("is not a valid integer"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+        assert_eq!(cursor.position, 2);
+    }
+
+    #[test]
+    fn read_integer_out_of_range() {
+        let input = "9223372036854775808\r\n".as_bytes();
+        let mut cursor = Cursor::new(input);
+
+        match cursor.read_integer() {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(msg.contains("is not a valid integer"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+        assert_eq!(cursor.position, 21);
+    }
+
+    #[test]
+    fn parse_simple_string() {
+        let input = b"+hello\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::SimpleString(s) if s == "hello"));
+    }
+
+    #[test]
+    fn parse_empty_simple_string() {
+        let input = b"+\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::SimpleString(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn parse_invalid_first_byte() {
+        let input = b"/hello\r\n";
+        match parse(input) {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(msg.contains("unexpected first byte"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+    }
+
+    #[test]
+    fn parse_incomplete_input() {
+        let input = b"+hello";
+        assert!(matches!(parse(input), Err(Error::UnexpectedEOF)));
+    }
+
+    #[test]
+    fn parse_error() {
         let input = b"-Error message\r\n";
-        let parsed = parse(input).unwrap();
-        assert_eq!(parsed, RespValue::Error("Error message".to_string()));
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Error(s) if s == "Error message"));
     }
 
     #[test]
-    fn test_parse_error_with_newline() {
-        let input = b"-Error message\n";
-        let parsed = parse(input);
-        assert_eq!(parsed, Err(Error::UnexpectedEOF));
+    fn parse_empty_error() {
+        let input = b"-\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Error(s) if s.is_empty()));
     }
 
     #[test]
-    fn test_parse_positive_integer() {
-        let input = b":123\r\n";
-        let parsed = parse(input).unwrap();
-        assert_eq!(parsed, RespValue::Integer(123));
+    fn parse_integer_positive() {
+        let input = b":42\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Integer(n) if n == 42));
     }
 
     #[test]
-    fn test_parse_negative_integer() {
+    fn parse_integer_negative() {
         let input = b":-123\r\n";
-        let parsed = parse(input).unwrap();
-        assert_eq!(parsed, RespValue::Integer(-123));
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Integer(n) if n == -123));
     }
 
     #[test]
-    fn test_parse_integer_with_newline() {
-        let input = b":123\n";
-        let parsed = parse(input);
-        assert_eq!(parsed, Err(Error::UnexpectedEOF));
+    fn parse_integer_zero() {
+        let input = b":0\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Integer(n) if n == 0));
     }
 
     #[test]
-    fn test_parse_integer_overflow() {
-        let input = b":9223372036854775808\r\n";
-        let parsed = parse(input);
-        assert_eq!(
-            parsed,
-            Err(Error::InvalidInteger("9223372036854775808".to_string()))
-        );
+    fn parse_integer_max() {
+        let input = b":9223372036854775807\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Integer(n) if n == i64::MAX));
+    }
+
+    #[test]
+    fn parse_integer_min() {
+        let input = b":-9223372036854775808\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Integer(n) if n == i64::MIN));
+    }
+
+    #[test]
+    fn parse_integer_invalid() {
+        let input = b":not_a_number\r\n";
+        match parse(input) {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(msg.contains("is not a valid integer"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+    }
+
+    #[test]
+    fn parse_bulk_string() {
+        let input = b"$5\r\nhello\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::BulkString(s) if s == "hello"));
+    }
+
+    #[test]
+    fn parse_empty_bulk_string() {
+        let input = b"$0\r\n\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::BulkString(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn parse_null_bulk_string() {
+        let input = b"$-1\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Null));
+    }
+
+    #[test]
+    fn parse_bulk_string_with_special_chars() {
+        let input = b"$8\r\nfoo\r\nbar\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::BulkString(s) if s == "foo\r\nbar"));
+    }
+
+    #[test]
+    fn parse_bulk_string_length_mismatch() {
+        let input = b"$10\r\nhello\r\n";
+        assert!(matches!(parse(input), Err(Error::UnexpectedEOF)));
     }
 }
