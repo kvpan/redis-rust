@@ -77,6 +77,7 @@ pub enum RespValue {
     BulkError(String),
     VerbatimString(String, String),
     Map(Vec<(RespValue, RespValue)>),
+    Set(Vec<RespValue>),
 }
 
 pub fn parse(input: &[u8]) -> Result<RespValue, Error> {
@@ -237,6 +238,17 @@ fn parse_value(cursor: &mut Cursor) -> Result<RespValue, Error> {
             }
 
             Ok(RespValue::Map(entries))
+        }
+        '~' => {
+            let len = cursor.read_integer()?;
+            let mut entries = Vec::new();
+
+            for _ in 0..len {
+                let value = parse_value(cursor)?;
+                entries.push(value);
+            }
+
+            Ok(RespValue::Set(entries))
         }
         _ => Err(Error::InvalidInput(format!(
             "unexpected first byte: {}",
@@ -780,6 +792,32 @@ mod tests {
     #[test]
     fn parse_incomplete_map() {
         let input = b"%2\r\n$3\r\nkey\r\n";
+        assert!(matches!(parse(input), Err(Error::UnexpectedEOF)));
+    }
+
+    #[test]
+    fn parse_empty_set() {
+        let input = b"~0\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Set(set) if set.is_empty()));
+    }
+
+    #[test]
+    fn parse_simple_set() {
+        let input = b"~2\r\n$5\r\nhello\r\n$5\r\nworld\r\n";
+        let result = parse(input).unwrap();
+        if let RespValue::Set(set) = result {
+            assert_eq!(set.len(), 2);
+            assert!(matches!(&set[0], RespValue::BulkString(s) if s == "hello"));
+            assert!(matches!(&set[1], RespValue::BulkString(s) if s == "world"));
+        } else {
+            panic!("Expected Set");
+        }
+    }
+
+    #[test]
+    fn parse_incomplete_set() {
+        let input = b"~2\r\n$5\r\nhello\r\n";
         assert!(matches!(parse(input), Err(Error::UnexpectedEOF)));
     }
 }
