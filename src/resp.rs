@@ -69,6 +69,11 @@ pub enum RespValue {
     Array(Vec<RespValue>),
     True,
     False,
+    Double(f64),
+    PositiveInfinity,
+    NegativeInfinity,
+    NaN,
+    BigNumber(String),
 }
 
 pub fn parse(input: &[u8]) -> Result<RespValue, Error> {
@@ -147,6 +152,45 @@ fn parse_value(cursor: &mut Cursor) -> Result<RespValue, Error> {
                     value
                 ))),
             }
+        }
+        ',' => {
+            let value = cursor.read_line()?;
+            match value {
+                b"inf" => Ok(RespValue::PositiveInfinity),
+                b"-inf" => Ok(RespValue::NegativeInfinity),
+                b"nan" => Ok(RespValue::NaN),
+                _ => {
+                    let double = std::str::from_utf8(value)
+                        .map_err(|_| Error::InvalidInput(format!("invalid double: {:?}", value)))
+                        .and_then(|s| {
+                            s.parse::<f64>().map_err(|_| {
+                                Error::InvalidInput(format!("invalid double: {:?}", value))
+                            })
+                        })?;
+                    Ok(RespValue::Double(double))
+                }
+            }
+        }
+        '(' => {
+            let value = cursor.read_string()?;
+
+            if !value.starts_with(|c: char| c == '+' || c == '-') {
+                return Err(Error::InvalidInput(format!(
+                    "invalid big number: {:?}",
+                    value
+                )));
+            }
+
+            for c in value.chars().skip(1) {
+                if !c.is_digit(10) {
+                    return Err(Error::InvalidInput(format!(
+                        "invalid big number: {:?}",
+                        value
+                    )));
+                }
+            }
+
+            Ok(RespValue::BigNumber(value))
         }
         _ => Err(Error::InvalidInput(format!(
             "unexpected first byte: {}",
@@ -527,5 +571,87 @@ mod tests {
         let input = b"#f\r\n";
         let result = parse(input).unwrap();
         assert!(matches!(result, RespValue::False));
+    }
+
+    #[test]
+    fn parse_double_valid() {
+        let input = b",123.45\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Double(n) if n == 123.45));
+    }
+
+    #[test]
+    fn parse_double_negative() {
+        let input = b",-123.45\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Double(n) if n == -123.45));
+    }
+
+    #[test]
+    fn parse_double_nan() {
+        let input = b",nan\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::NaN));
+    }
+
+    #[test]
+    fn parse_double_infinity() {
+        let input = b",inf\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::PositiveInfinity));
+    }
+
+    #[test]
+    fn parse_double_negative_infinity() {
+        let input = b",-inf\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::NegativeInfinity));
+    }
+
+    #[test]
+    fn parse_double_invalid() {
+        let input = b",not_a_number\r\n";
+        match parse(input) {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(msg.contains("invalid double"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+    }
+
+    #[test]
+    fn parse_big_number_valid() {
+        let input = b"(+12345678901234567890\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::BigNumber(s) if s == "+12345678901234567890"));
+    }
+
+    #[test]
+    fn parse_big_number_negative() {
+        let input = b"(-12345678901234567890\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::BigNumber(s) if s == "-12345678901234567890"));
+    }
+
+    #[test]
+    fn parse_big_number_invalid_chars() {
+        let input = b"(123abc\r\n";
+        match parse(input) {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(msg.contains("invalid big number"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+    }
+
+    #[test]
+    fn parse_big_number_missing_sign() {
+        let input = b"(12345678901234567890\r\n";
+        match parse(input) {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(msg.contains("invalid big number"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
     }
 }
