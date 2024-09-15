@@ -76,6 +76,7 @@ pub enum RespValue {
     BigNumber(String),
     BulkError(String),
     VerbatimString(String, String),
+    Map(Vec<(RespValue, RespValue)>),
 }
 
 pub fn parse(input: &[u8]) -> Result<RespValue, Error> {
@@ -224,6 +225,18 @@ fn parse_value(cursor: &mut Cursor) -> Result<RespValue, Error> {
                 encoding.to_string(),
                 string.to_string(),
             ))
+        }
+        '%' => {
+            let len = cursor.read_integer()?;
+            let mut entries = Vec::new();
+
+            for _ in 0..len {
+                let key = parse_value(cursor)?;
+                let value = parse_value(cursor)?;
+                entries.push((key, value));
+            }
+
+            Ok(RespValue::Map(entries))
         }
         _ => Err(Error::InvalidInput(format!(
             "unexpected first byte: {}",
@@ -726,5 +739,47 @@ mod tests {
             }
             _ => panic!("Expected InvalidInput error"),
         }
+    }
+
+    #[test]
+    fn parse_map() {
+        let input = b"%2\r\n$3\r\nkey\r\n$5\r\nvalue\r\n+OK\r\n:2\r\n";
+        let result = parse(input).unwrap();
+        if let RespValue::Map(map) = result {
+            assert_eq!(map.len(), 2);
+            assert!(
+                matches!(&map[0], (RespValue::BulkString(k), RespValue::BulkString(v)) if k == "key" && v == "value")
+            );
+            assert!(
+                matches!(&map[1], (RespValue::SimpleString(k), RespValue::Integer(v)) if k == "OK" && *v == 2)
+            );
+        } else {
+            panic!("Expected Map");
+        }
+    }
+
+    #[test]
+    fn parse_empty_map() {
+        let input = b"%0\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Map(map) if map.is_empty()));
+    }
+
+    #[test]
+    fn parse_map_with_null_values() {
+        let input = b"%1\r\n$3\r\nkey\r\n_\r\n";
+        let result = parse(input).unwrap();
+        if let RespValue::Map(map) = result {
+            assert_eq!(map.len(), 1);
+            assert!(matches!(&map[0], (RespValue::BulkString(k), RespValue::Null) if k == "key"));
+        } else {
+            panic!("Expected Map");
+        }
+    }
+
+    #[test]
+    fn parse_incomplete_map() {
+        let input = b"%2\r\n$3\r\nkey\r\n";
+        assert!(matches!(parse(input), Err(Error::UnexpectedEOF)));
     }
 }
