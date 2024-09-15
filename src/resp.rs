@@ -67,6 +67,8 @@ pub enum RespValue {
     BulkString(String),
     Null,
     Array(Vec<RespValue>),
+    True,
+    False,
 }
 
 pub fn parse(input: &[u8]) -> Result<RespValue, Error> {
@@ -134,6 +136,17 @@ fn parse_value(cursor: &mut Cursor) -> Result<RespValue, Error> {
                 )));
             }
             Ok(RespValue::Null)
+        }
+        '#' => {
+            let value = cursor.read_byte()?;
+            match value {
+                b't' => Ok(RespValue::True),
+                b'f' => Ok(RespValue::False),
+                _ => Err(Error::InvalidInput(format!(
+                    "unexpected byte after #: {}",
+                    value
+                ))),
+            }
         }
         _ => Err(Error::InvalidInput(format!(
             "unexpected first byte: {}",
@@ -500,5 +513,19 @@ mod tests {
         let input = b"_\r\n";
         let result = parse(input).unwrap();
         assert!(matches!(result, RespValue::Null));
+    }
+
+    #[test]
+    fn parse_true_value() {
+        let input = b"#t\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::True));
+    }
+
+    #[test]
+    fn parse_false_value() {
+        let input = b"#f\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::False));
     }
 }
