@@ -74,6 +74,7 @@ pub enum RespValue {
     NegativeInfinity,
     NaN,
     BigNumber(String),
+    BulkError(String),
 }
 
 pub fn parse(input: &[u8]) -> Result<RespValue, Error> {
@@ -191,6 +192,14 @@ fn parse_value(cursor: &mut Cursor) -> Result<RespValue, Error> {
             }
 
             Ok(RespValue::BigNumber(value))
+        }
+        '!' => {
+            let len = cursor.read_integer()?;
+            let data = cursor.read(len as usize)?;
+            let string = std::str::from_utf8(data).map_err(|_| {
+                Error::InvalidInput(format!("'{:?}' is not a valid UTF-8 sequence", data))
+            })?;
+            Ok(RespValue::BulkError(string.to_string()))
         }
         _ => Err(Error::InvalidInput(format!(
             "unexpected first byte: {}",
@@ -653,5 +662,19 @@ mod tests {
             }
             _ => panic!("Expected InvalidInput error"),
         }
+    }
+
+    #[test]
+    fn parse_bulk_error() {
+        let input = b"!13\r\nerror message\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::BulkError(s) if s == "error message"));
+    }
+
+    #[test]
+    fn parse_empty_bulk_error() {
+        let input = b"!0\r\n\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::BulkError(s) if s.is_empty()));
     }
 }
