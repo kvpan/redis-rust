@@ -66,10 +66,15 @@ pub enum RespValue {
     Integer(i64),
     BulkString(String),
     Null,
+    Array(Vec<RespValue>),
 }
 
 pub fn parse(input: &[u8]) -> Result<RespValue, Error> {
     let mut cursor = Cursor::new(input);
+    parse_value(&mut cursor)
+}
+
+fn parse_value(cursor: &mut Cursor) -> Result<RespValue, Error> {
     let first_byte = cursor.read_byte()? as char;
     match first_byte {
         '+' => {
@@ -87,15 +92,38 @@ pub fn parse(input: &[u8]) -> Result<RespValue, Error> {
         '$' => {
             // TODO: Handle the case where the length is too large
             let len = cursor.read_integer()?;
+
             if len == -1 {
-                Ok(RespValue::Null)
-            } else {
-                let data = cursor.read(len as usize)?;
-                let string = std::str::from_utf8(data).map_err(|_| {
-                    Error::InvalidInput(format!("'{:?}' is not a valid UTF-8 sequence", data))
-                })?;
-                Ok(RespValue::BulkString(string.to_string()))
+                return Ok(RespValue::Null);
             }
+
+            let data = cursor.read(len as usize)?;
+            let string = std::str::from_utf8(data).map_err(|_| {
+                Error::InvalidInput(format!("'{:?}' is not a valid UTF-8 sequence", data))
+            })?;
+
+            let terminator = cursor.read(2)?;
+            if terminator != b"\r\n" {
+                return Err(Error::InvalidInput(format!(
+                    "unexpected bytes after bulk string: {:?}",
+                    terminator
+                )));
+            }
+
+            Ok(RespValue::BulkString(string.to_string()))
+        }
+        '*' => {
+            let len = cursor.read_integer()?;
+
+            if len == -1 {
+                return Ok(RespValue::Null);
+            }
+
+            let items = (0..len)
+                .map(|_| parse_value(cursor))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(RespValue::Array(items))
         }
         _ => Err(Error::InvalidInput(format!(
             "unexpected first byte: {}",
@@ -401,6 +429,59 @@ mod tests {
     #[test]
     fn parse_bulk_string_length_mismatch() {
         let input = b"$10\r\nhello\r\n";
+        assert!(matches!(parse(input), Err(Error::UnexpectedEOF)));
+    }
+
+    #[test]
+    fn parse_empty_array() {
+        let input = b"*0\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Array(arr) if arr.is_empty()));
+    }
+
+    #[test]
+    fn parse_simple_array() {
+        let input = b"*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n";
+        let result = parse(input).unwrap();
+        if let RespValue::Array(arr) = result {
+            assert_eq!(arr.len(), 2);
+            assert!(matches!(&arr[0], RespValue::BulkString(s) if s == "hello"));
+            assert!(matches!(&arr[1], RespValue::BulkString(s) if s == "world"));
+        } else {
+            panic!("Expected Array");
+        }
+    }
+
+    #[test]
+    fn parse_nested_array() {
+        let input = b"*3\r\n:1\r\n*2\r\n+Hello\r\n-Error\r\n$5\r\nworld\r\n";
+        let result = parse(input).unwrap();
+        if let RespValue::Array(arr) = result {
+            assert_eq!(arr.len(), 3);
+            assert!(matches!(&arr[0], RespValue::Integer(n) if *n == 1));
+            if let RespValue::Array(nested) = &arr[1] {
+                assert_eq!(nested.len(), 2);
+                assert!(matches!(&nested[0], RespValue::SimpleString(s) if s == "Hello"));
+                assert!(matches!(&nested[1], RespValue::Error(s) if s == "Error"));
+            } else {
+                panic!("Expected nested Array");
+            }
+            assert!(matches!(&arr[2], RespValue::BulkString(s) if s == "world"));
+        } else {
+            panic!("Expected Array");
+        }
+    }
+
+    #[test]
+    fn parse_array_with_null() {
+        let input = b"*-1\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Null));
+    }
+
+    #[test]
+    fn parse_incomplete_array() {
+        let input = b"*2\r\n:1\r\n";
         assert!(matches!(parse(input), Err(Error::UnexpectedEOF)));
     }
 }
