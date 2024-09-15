@@ -75,6 +75,7 @@ pub enum RespValue {
     NaN,
     BigNumber(String),
     BulkError(String),
+    VerbatimString(String, String),
 }
 
 pub fn parse(input: &[u8]) -> Result<RespValue, Error> {
@@ -200,6 +201,29 @@ fn parse_value(cursor: &mut Cursor) -> Result<RespValue, Error> {
                 Error::InvalidInput(format!("'{:?}' is not a valid UTF-8 sequence", data))
             })?;
             Ok(RespValue::BulkError(string.to_string()))
+        }
+        '=' => {
+            let len = cursor.read_integer()?;
+            let data = cursor.read(len as usize)?;
+
+            if data[3] != b':' {
+                return Err(Error::InvalidInput(format!(
+                    "invalid verbatim string: {:?}",
+                    data
+                )));
+            }
+
+            let encoding = std::str::from_utf8(&data[..3])
+                .map_err(|_| Error::InvalidInput(format!("invalid encoding: {:?}", data)))?;
+
+            let string = std::str::from_utf8(&data[4..]).map_err(|_| {
+                Error::InvalidInput(format!("'{:?}' is not a valid UTF-8 sequence", data))
+            })?;
+
+            Ok(RespValue::VerbatimString(
+                encoding.to_string(),
+                string.to_string(),
+            ))
         }
         _ => Err(Error::InvalidInput(format!(
             "unexpected first byte: {}",
@@ -676,5 +700,31 @@ mod tests {
         let input = b"!0\r\n\r\n";
         let result = parse(input).unwrap();
         assert!(matches!(result, RespValue::BulkError(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn parse_verbatim_string() {
+        let input = b"=15\r\ntxt:Some string\r\n";
+        let result = parse(input).unwrap();
+        assert!(
+            matches!(result, RespValue::VerbatimString(enc, s) if enc == "txt" && s == "Some string")
+        );
+    }
+
+    #[test]
+    fn parse_verbatim_string_length_mismatch() {
+        let input = b"=20\r\ntxt:Some string\r\n";
+        assert!(matches!(parse(input), Err(Error::UnexpectedEOF)));
+    }
+
+    #[test]
+    fn parse_invalid_verbatim_string_encoding() {
+        let input = b"=11\r\nSome string\r\n";
+        match parse(input) {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(msg.contains("invalid verbatim string"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
     }
 }
