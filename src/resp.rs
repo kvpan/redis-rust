@@ -125,6 +125,16 @@ fn parse_value(cursor: &mut Cursor) -> Result<RespValue, Error> {
 
             Ok(RespValue::Array(items))
         }
+        '_' => {
+            let terminator = cursor.read(2)?;
+            if terminator != b"\r\n" {
+                return Err(Error::InvalidInput(format!(
+                    "unexpected bytes after null: {:?}",
+                    terminator
+                )));
+            }
+            Ok(RespValue::Null)
+        }
         _ => Err(Error::InvalidInput(format!(
             "unexpected first byte: {}",
             first_byte
@@ -473,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_array_with_null() {
+    fn parse_null_array() {
         let input = b"*-1\r\n";
         let result = parse(input).unwrap();
         assert!(matches!(result, RespValue::Null));
@@ -483,5 +493,12 @@ mod tests {
     fn parse_incomplete_array() {
         let input = b"*2\r\n:1\r\n";
         assert!(matches!(parse(input), Err(Error::UnexpectedEOF)));
+    }
+
+    #[test]
+    fn parse_null_value() {
+        let input = b"_\r\n";
+        let result = parse(input).unwrap();
+        assert!(matches!(result, RespValue::Null));
     }
 }
