@@ -5,6 +5,8 @@ use crate::resp::RespValue;
 pub enum Command {
     Ping,
     Echo(String),
+    Set(String, String),
+    Get(String),
 }
 
 impl Command {
@@ -43,6 +45,42 @@ impl Command {
                 };
 
                 Ok(Command::Echo(msg.to_string()))
+            }
+            "SET" => {
+                if arr.len() != 3 {
+                    return Err(RespError::InvalidInput(
+                        String::from_utf8(bytes.to_vec()).unwrap(),
+                    ));
+                }
+
+                let RespValue::BulkString(key) = arr.get(1).unwrap() else {
+                    return Err(RespError::InvalidInput(
+                        String::from_utf8(bytes.to_vec()).unwrap(),
+                    ));
+                };
+
+                let RespValue::BulkString(value) = arr.get(2).unwrap() else {
+                    return Err(RespError::InvalidInput(
+                        String::from_utf8(bytes.to_vec()).unwrap(),
+                    ));
+                };
+
+                Ok(Command::Set(key.to_string(), value.to_string()))
+            }
+            "GET" => {
+                if arr.len() != 2 {
+                    return Err(RespError::InvalidInput(
+                        String::from_utf8(bytes.to_vec()).unwrap(),
+                    ));
+                }
+
+                let RespValue::BulkString(key) = arr.get(1).unwrap() else {
+                    return Err(RespError::InvalidInput(
+                        String::from_utf8(bytes.to_vec()).unwrap(),
+                    ));
+                };
+
+                Ok(Command::Get(key.to_string()))
             }
             _ => Err(RespError::InvalidInput(
                 String::from_utf8(bytes.to_vec()).unwrap(),

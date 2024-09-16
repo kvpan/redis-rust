@@ -1,5 +1,9 @@
 #![allow(unused_imports)]
-use std::io::{Read, Write};
+use std::{
+    collections::HashMap,
+    io::{Read, Write},
+    sync::Arc,
+};
 
 use anyhow::Context;
 use commands::Command;
@@ -7,6 +11,7 @@ use resp::RespValue;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
+    sync::Mutex,
 };
 
 mod commands;
@@ -20,6 +25,8 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
     tracing::info!("Server listening on 127.0.0.1:6379");
 
+    let state = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+
     loop {
         let (mut socket, _addr) = listener.accept().await?;
 
@@ -31,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
+        let state = Arc::clone(&state);
         tokio::spawn(async move {
             let mut buf = [0; 1024];
 
@@ -53,8 +61,29 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Ok(Command::Echo(arg)) => {
                         tracing::info!("Received ECHO: {:?}", arg);
-                        let reply = RespValue::SimpleString(arg);
+                        let reply = RespValue::BulkString(arg);
                         send(&mut socket, reply).await.unwrap();
+                    }
+                    Ok(Command::Set(key, value)) => {
+                        tracing::info!("Received SET: {:?} {:?}", key, value);
+                        let reply = RespValue::SimpleString("OK".to_string());
+                        let mut state = state.lock().await;
+                        state.insert(key, value);
+                        send(&mut socket, reply).await.unwrap();
+                    }
+                    Ok(Command::Get(key)) => {
+                        tracing::info!("Received GET: {:?}", key);
+                        let state = state.lock().await;
+                        match state.get(&key) {
+                            Some(value) => {
+                                let reply = RespValue::BulkString(value.to_string());
+                                send(&mut socket, reply).await.unwrap();
+                            }
+                            None => {
+                                let reply = RespValue::Null;
+                                send(&mut socket, reply).await.unwrap();
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::warn!("Error: {:?}", e);
