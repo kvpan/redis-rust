@@ -1,83 +1,162 @@
-use thiserror::Error;
-
-struct Cursor<'a> {
-    input: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Cursor<'a> {
-    pub fn new(input: &'a [u8]) -> Self {
-        Self { input, position: 0 }
-    }
-
-    pub fn read(&mut self, n: usize) -> Result<&'a [u8], Error> {
-        if self.position + n > self.input.len() {
-            return Err(Error::UnexpectedEOF);
-        }
-        let slice = &self.input[self.position..self.position + n];
-        self.position += n;
-        Ok(slice)
-    }
-
-    pub fn read_byte(&mut self) -> Result<u8, Error> {
-        if self.position >= self.input.len() {
-            return Err(Error::UnexpectedEOF);
-        }
-        let byte = self.input[self.position];
-        self.position += 1;
-        Ok(byte)
-    }
-
-    pub fn read_line(&mut self) -> Result<&'a [u8], Error> {
-        let start = self.position;
-        while self.position < self.input.len() - 1 {
-            if self.input[self.position] == b'\r' && self.input[self.position + 1] == b'\n' {
-                let line = &self.input[start..self.position];
-                self.position += 2;
-                return Ok(line);
-            }
-            self.position += 1;
-        }
-        Err(Error::UnexpectedEOF)
-    }
-
-    pub fn read_string(&mut self) -> Result<String, Error> {
-        let line = self.read_line()?;
-        String::from_utf8(line.to_vec())
-            .map_err(|_| Error::InvalidInput(format!("'{:?}' is not a valid UTF-8 sequence", line)))
-    }
-
-    pub fn read_integer(&mut self) -> Result<i64, Error> {
-        let line = self.read_line()?;
-        let integer = std::str::from_utf8(line)
-            .map_err(|_| Error::InvalidInput(format!("'{:?}' is not a valid UTF-8 sequence", line)))
-            .and_then(|s| {
-                s.parse::<i64>().map_err(|_| {
-                    Error::InvalidInput(format!("'{:?}' is not a valid integer", line))
-                })
-            })?;
-        Ok(integer)
-    }
-}
+use crate::{cursor::Cursor, cursor::Error};
 
 pub enum RespValue {
-    SimpleString(String),
-    Error(String),
-    Integer(i64),
-    BulkString(String),
-    Null,
     Array(Vec<RespValue>),
-    True,
-    False,
-    Double(f64),
-    PositiveInfinity,
-    NegativeInfinity,
-    NaN,
     BigNumber(String),
     BulkError(String),
-    VerbatimString(String, String),
+    BulkString(String),
+    Double(f64),
+    Error(String),
+    False,
+    Integer(i64),
     Map(Vec<(RespValue, RespValue)>),
+    NaN,
+    NegativeInfinity,
+    Null,
+    PositiveInfinity,
     Set(Vec<RespValue>),
+    SimpleString(String),
+    True,
+    VerbatimString(String, String),
+}
+
+impl RespValue {
+    pub fn as_bytes(&self) -> Vec<u8> {
+        match self {
+            RespValue::Array(values) => {
+                let mut array = Vec::new();
+                array.push(b'*');
+                array.extend_from_slice(values.len().to_string().as_bytes());
+                array.extend_from_slice(b"\r\n");
+
+                for value in values {
+                    array.extend(value.as_bytes());
+                }
+
+                array
+            }
+            RespValue::BigNumber(string) => {
+                let mut array = Vec::new();
+                array.push(b'(');
+                array.extend_from_slice(string.as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array
+            }
+            RespValue::BulkError(string) => {
+                let mut array = Vec::new();
+                array.push(b'!');
+                array.extend_from_slice(string.len().to_string().as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array.extend_from_slice(string.as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array
+            }
+            RespValue::BulkString(string) => {
+                let mut array = Vec::new();
+                array.push(b'$');
+                array.extend_from_slice(string.len().to_string().as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array.extend_from_slice(string.as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array
+            }
+            RespValue::Double(value) => {
+                let mut array = Vec::new();
+                array.push(b',');
+                array.extend_from_slice(value.to_string().as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array
+            }
+            RespValue::Error(string) => {
+                let mut array = Vec::new();
+                array.push(b'-');
+                array.extend_from_slice(string.as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array
+            }
+            RespValue::False => {
+                let mut array = Vec::new();
+                array.extend_from_slice(b"#f\r\n");
+                array
+            }
+            RespValue::Integer(value) => {
+                let mut array = Vec::new();
+                array.push(b':');
+                array.extend_from_slice(value.to_string().as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array
+            }
+            RespValue::Map(entries) => {
+                let mut array = Vec::new();
+                array.push(b'%');
+                array.extend_from_slice(entries.len().to_string().as_bytes());
+                array.extend_from_slice(b"\r\n");
+
+                for (key, value) in entries {
+                    array.extend(key.as_bytes());
+                    array.extend(value.as_bytes());
+                }
+
+                array
+            }
+            RespValue::NaN => {
+                let mut array = Vec::new();
+                array.extend_from_slice(b",nan\r\n");
+                array
+            }
+            RespValue::NegativeInfinity => {
+                let mut array = Vec::new();
+                array.extend_from_slice(b",-inf\r\n");
+                array
+            }
+            RespValue::Null => {
+                let mut array = Vec::new();
+                array.extend_from_slice(b"_\r\n");
+                array
+            }
+            RespValue::PositiveInfinity => {
+                let mut array = Vec::new();
+                array.extend_from_slice(b",inf\r\n");
+                array
+            }
+            RespValue::Set(values) => {
+                let mut array = Vec::new();
+                array.push(b'~');
+                array.extend_from_slice(values.len().to_string().as_bytes());
+                array.extend_from_slice(b"\r\n");
+
+                for value in values {
+                    array.extend(value.as_bytes());
+                }
+
+                array
+            }
+            RespValue::SimpleString(string) => {
+                let mut array = Vec::new();
+                array.push(b'+');
+                array.extend_from_slice(string.as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array
+            }
+            RespValue::True => {
+                let mut array = Vec::new();
+                array.extend_from_slice(b"#t\r\n");
+                array
+            }
+            RespValue::VerbatimString(encoding, string) => {
+                let len = encoding.len() + string.len() + 1;
+                let mut array = Vec::new();
+                array.push(b'=');
+                array.extend_from_slice(len.to_string().as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array.extend_from_slice(encoding.as_bytes());
+                array.push(b':');
+                array.extend_from_slice(string.as_bytes());
+                array.extend_from_slice(b"\r\n");
+                array
+            }
+        }
+    }
 }
 
 pub fn parse(input: &[u8]) -> Result<RespValue, Error> {
@@ -257,180 +336,9 @@ fn parse_value(cursor: &mut Cursor) -> Result<RespValue, Error> {
     }
 }
 
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("unexpected EOF")]
-    UnexpectedEOF,
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cursor_new() {
-        let input = b"hello";
-        let cursor = Cursor::new(input);
-        assert_eq!(cursor.position, 0);
-        assert_eq!(cursor.input, input);
-    }
-
-    #[test]
-    fn read_byte_success() {
-        let input = b"ab";
-        let mut cursor = Cursor::new(input);
-
-        assert_eq!(cursor.read_byte().unwrap(), b'a');
-        assert_eq!(cursor.position, 1);
-
-        assert_eq!(cursor.read_byte().unwrap(), b'b');
-        assert_eq!(cursor.position, 2);
-    }
-
-    #[test]
-    fn read_byte_eof() {
-        let input = b"a";
-        let mut cursor = Cursor::new(input);
-
-        assert_eq!(cursor.read_byte().unwrap(), b'a');
-        assert_eq!(cursor.position, 1);
-
-        assert!(matches!(cursor.read_byte(), Err(Error::UnexpectedEOF)));
-        assert_eq!(cursor.position, 1);
-    }
-
-    #[test]
-    fn read_line_success() {
-        let input = b"hello\r\nworld\r\n";
-        let mut cursor = Cursor::new(input);
-
-        assert_eq!(cursor.read_line().unwrap(), b"hello");
-        assert_eq!(cursor.position, 7);
-
-        assert_eq!(cursor.read_line().unwrap(), b"world");
-        assert_eq!(cursor.position, 14);
-    }
-
-    #[test]
-    fn read_line_no_crlf() {
-        let input = b"hello";
-        let mut cursor = Cursor::new(input);
-
-        assert!(matches!(cursor.read_line(), Err(Error::UnexpectedEOF)));
-        assert_eq!(cursor.position, 4);
-    }
-
-    #[test]
-    fn read_line_empty() {
-        let input = b"\r\n";
-        let mut cursor = Cursor::new(input);
-
-        assert_eq!(cursor.read_line().unwrap(), b"");
-        assert_eq!(cursor.position, 2);
-    }
-
-    #[test]
-    fn read_string_success() {
-        let input = "hello\r\nworld\r\n".as_bytes();
-        let mut cursor = Cursor::new(input);
-
-        assert_eq!(cursor.read_string().unwrap(), "hello");
-        assert_eq!(cursor.position, 7);
-
-        assert_eq!(cursor.read_string().unwrap(), "world");
-        assert_eq!(cursor.position, 14);
-    }
-
-    #[test]
-    fn read_string_empty() {
-        let input = "\r\n".as_bytes();
-        let mut cursor = Cursor::new(input);
-
-        assert_eq!(cursor.read_string().unwrap(), "");
-        assert_eq!(cursor.position, 2);
-    }
-
-    #[test]
-    fn read_string_invalid_utf8() {
-        let input = &[0xFF, b'\r', b'\n'];
-        let mut cursor = Cursor::new(input);
-
-        match cursor.read_string() {
-            Err(Error::InvalidInput(msg)) => {
-                assert!(msg.contains("is not a valid UTF-8 sequence"));
-            }
-            _ => panic!("Expected InvalidInput error"),
-        }
-        assert_eq!(cursor.position, 3);
-    }
-
-    #[test]
-    fn read_string_eof() {
-        let input = "hello".as_bytes();
-        let mut cursor = Cursor::new(input);
-
-        assert!(matches!(cursor.read_string(), Err(Error::UnexpectedEOF)));
-        assert_eq!(cursor.position, 4);
-    }
-
-    #[test]
-    fn read_integer_success() {
-        let input = "42\r\n-123\r\n0\r\n".as_bytes();
-        let mut cursor = Cursor::new(input);
-
-        assert_eq!(cursor.read_integer().unwrap(), 42);
-        assert_eq!(cursor.position, 4);
-
-        assert_eq!(cursor.read_integer().unwrap(), -123);
-        assert_eq!(cursor.position, 10);
-
-        assert_eq!(cursor.read_integer().unwrap(), 0);
-        assert_eq!(cursor.position, 13);
-    }
-
-    #[test]
-    fn read_integer_invalid_input() {
-        let input = "not_a_number\r\n".as_bytes();
-        let mut cursor = Cursor::new(input);
-
-        match cursor.read_integer() {
-            Err(Error::InvalidInput(msg)) => {
-                assert!(msg.contains("is not a valid integer"));
-            }
-            _ => panic!("Expected InvalidInput error"),
-        }
-        assert_eq!(cursor.position, 14);
-    }
-
-    #[test]
-    fn read_integer_empty() {
-        let input = "\r\n".as_bytes();
-        let mut cursor = Cursor::new(input);
-
-        match cursor.read_integer() {
-            Err(Error::InvalidInput(msg)) => {
-                assert!(msg.contains("is not a valid integer"));
-            }
-            _ => panic!("Expected InvalidInput error"),
-        }
-        assert_eq!(cursor.position, 2);
-    }
-
-    #[test]
-    fn read_integer_out_of_range() {
-        let input = "9223372036854775808\r\n".as_bytes();
-        let mut cursor = Cursor::new(input);
-
-        match cursor.read_integer() {
-            Err(Error::InvalidInput(msg)) => {
-                assert!(msg.contains("is not a valid integer"));
-            }
-            _ => panic!("Expected InvalidInput error"),
-        }
-        assert_eq!(cursor.position, 21);
-    }
 
     #[test]
     fn parse_simple_string() {
@@ -819,5 +727,257 @@ mod tests {
     fn parse_incomplete_set() {
         let input = b"~2\r\n$5\r\nhello\r\n";
         assert!(matches!(parse(input), Err(Error::UnexpectedEOF)));
+    }
+
+    #[test]
+    fn array_as_bytes_empty() {
+        let array = RespValue::Array(vec![]);
+        let result = array.as_bytes();
+        assert_eq!(result, b"*0\r\n");
+    }
+
+    #[test]
+    fn array_as_bytes_single_element() {
+        let array = RespValue::Array(vec![RespValue::SimpleString("hello".to_string())]);
+        let result = array.as_bytes();
+        assert_eq!(result, b"*1\r\n+hello\r\n");
+    }
+
+    #[test]
+    fn array_as_bytes_multiple_elements() {
+        let array = RespValue::Array(vec![
+            RespValue::SimpleString("hello".to_string()),
+            RespValue::SimpleString("world".to_string()),
+        ]);
+        let result = array.as_bytes();
+        assert_eq!(result, b"*2\r\n+hello\r\n+world\r\n");
+    }
+
+    #[test]
+    fn simple_string_as_bytes() {
+        let input = RespValue::SimpleString("hello".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"+hello\r\n");
+    }
+
+    #[test]
+    fn empty_simple_string_as_bytes() {
+        let input = RespValue::SimpleString("".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"+\r\n");
+    }
+
+    #[test]
+    fn big_number_as_bytes() {
+        let big_number = RespValue::BigNumber("+12345678901234567890".to_string());
+        let result = big_number.as_bytes();
+        assert_eq!(result, b"(+12345678901234567890\r\n");
+    }
+
+    #[test]
+    fn big_number_negative_as_bytes() {
+        let big_number = RespValue::BigNumber("-12345678901234567890".to_string());
+        let result = big_number.as_bytes();
+        assert_eq!(result, b"(-12345678901234567890\r\n");
+    }
+
+    #[test]
+    fn bulk_error_as_bytes() {
+        let input = RespValue::BulkError("error message".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"!13\r\nerror message\r\n");
+    }
+
+    #[test]
+    fn empty_bulk_error_as_bytes() {
+        let input = RespValue::BulkError("".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"!0\r\n\r\n");
+    }
+
+    #[test]
+    fn bulk_string_as_bytes() {
+        let input = RespValue::BulkString("hello".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"$5\r\nhello\r\n");
+    }
+
+    #[test]
+    fn empty_bulk_string_as_bytes() {
+        let input = RespValue::BulkString("".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"$0\r\n\r\n");
+    }
+
+    #[test]
+    fn bulk_string_with_special_chars_as_bytes() {
+        let input = RespValue::BulkString("foo\r\nbar".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"$8\r\nfoo\r\nbar\r\n");
+    }
+
+    #[test]
+    fn double_as_bytes_valid() {
+        let input = RespValue::Double(123.45);
+        let result = input.as_bytes();
+        assert_eq!(result, b",123.45\r\n");
+    }
+
+    #[test]
+    fn double_as_bytes_negative() {
+        let input = RespValue::Double(-123.45);
+        let result = input.as_bytes();
+        assert_eq!(result, b",-123.45\r\n");
+    }
+
+    #[test]
+    fn error_as_bytes() {
+        let input = RespValue::Error("Error message".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"-Error message\r\n");
+    }
+
+    #[test]
+    fn empty_error_as_bytes() {
+        let input = RespValue::Error("".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"-\r\n");
+    }
+
+    #[test]
+    fn false_as_bytes() {
+        let input = RespValue::False;
+        let result = input.as_bytes();
+        assert_eq!(result, b"#f\r\n");
+    }
+
+    #[test]
+    fn integer_as_bytes_positive() {
+        let input = RespValue::Integer(42);
+        let result = input.as_bytes();
+        assert_eq!(result, b":42\r\n");
+    }
+
+    #[test]
+    fn integer_as_bytes_negative() {
+        let input = RespValue::Integer(-123);
+        let result = input.as_bytes();
+        assert_eq!(result, b":-123\r\n");
+    }
+
+    #[test]
+    fn integer_as_bytes_zero() {
+        let input = RespValue::Integer(0);
+        let result = input.as_bytes();
+        assert_eq!(result, b":0\r\n");
+    }
+
+    #[test]
+    fn map_as_bytes_empty() {
+        let map = RespValue::Map(vec![]);
+        let result = map.as_bytes();
+        assert_eq!(result, b"%0\r\n");
+    }
+
+    #[test]
+    fn map_as_bytes_single_entry() {
+        let map = RespValue::Map(vec![(
+            RespValue::BulkString("key".to_string()),
+            RespValue::BulkString("value".to_string()),
+        )]);
+        let result = map.as_bytes();
+        assert_eq!(result, b"%1\r\n$3\r\nkey\r\n$5\r\nvalue\r\n");
+    }
+
+    #[test]
+    fn map_as_bytes_multiple_entries() {
+        let map = RespValue::Map(vec![
+            (
+                RespValue::BulkString("key1".to_string()),
+                RespValue::BulkString("value1".to_string()),
+            ),
+            (
+                RespValue::SimpleString("key2".to_string()),
+                RespValue::Integer(42),
+            ),
+        ]);
+        let result = map.as_bytes();
+        assert_eq!(
+            result,
+            b"%2\r\n$4\r\nkey1\r\n$6\r\nvalue1\r\n+key2\r\n:42\r\n"
+        );
+    }
+
+    #[test]
+    fn double_as_bytes_nan() {
+        let input = RespValue::NaN;
+        let result = input.as_bytes();
+        assert_eq!(result, b",nan\r\n");
+    }
+
+    #[test]
+    fn double_as_bytes_negative_infinity() {
+        let input = RespValue::NegativeInfinity;
+        let result = input.as_bytes();
+        assert_eq!(result, b",-inf\r\n");
+    }
+
+    #[test]
+    fn null_as_bytes() {
+        let input = RespValue::Null;
+        let result = input.as_bytes();
+        assert_eq!(result, b"_\r\n");
+    }
+
+    #[test]
+    fn double_as_bytes_positive_infinity() {
+        let input = RespValue::PositiveInfinity;
+        let result = input.as_bytes();
+        assert_eq!(result, b",inf\r\n");
+    }
+
+    #[test]
+    fn set_as_bytes_empty() {
+        let set = RespValue::Set(vec![]);
+        let result = set.as_bytes();
+        assert_eq!(result, b"~0\r\n");
+    }
+
+    #[test]
+    fn set_as_bytes_single_element() {
+        let set = RespValue::Set(vec![RespValue::SimpleString("hello".to_string())]);
+        let result = set.as_bytes();
+        assert_eq!(result, b"~1\r\n+hello\r\n");
+    }
+
+    #[test]
+    fn set_as_bytes_multiple_elements() {
+        let set = RespValue::Set(vec![
+            RespValue::SimpleString("hello".to_string()),
+            RespValue::SimpleString("world".to_string()),
+        ]);
+        let result = set.as_bytes();
+        assert_eq!(result, b"~2\r\n+hello\r\n+world\r\n");
+    }
+
+    #[test]
+    fn true_as_bytes() {
+        let input = RespValue::True;
+        let result = input.as_bytes();
+        assert_eq!(result, b"#t\r\n");
+    }
+
+    #[test]
+    fn verbatim_string_as_bytes() {
+        let input = RespValue::VerbatimString("txt".to_string(), "Some string".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"=15\r\ntxt:Some string\r\n");
+    }
+
+    #[test]
+    fn empty_verbatim_string_as_bytes() {
+        let input = RespValue::VerbatimString("txt".to_string(), "".to_string());
+        let result = input.as_bytes();
+        assert_eq!(result, b"=4\r\ntxt:\r\n");
     }
 }
