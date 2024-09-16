@@ -13,6 +13,7 @@ pub enum RespValue {
     NaN,
     NegativeInfinity,
     Null,
+    NullBulkString,
     PositiveInfinity,
     Set(Vec<RespValue>),
     SimpleString(String),
@@ -155,6 +156,11 @@ impl RespValue {
                 array.extend_from_slice(b"\r\n");
                 array
             }
+            RespValue::NullBulkString => {
+                let mut array = Vec::new();
+                array.extend_from_slice(b"$-1\r\n");
+                array
+            }
         }
     }
 }
@@ -184,7 +190,7 @@ fn parse_value(cursor: &mut Cursor) -> Result<RespValue, Error> {
             let len = cursor.read_integer()?;
 
             if len == -1 {
-                return Ok(RespValue::Null);
+                return Ok(RespValue::NullBulkString);
             }
 
             let data = cursor.read(len as usize)?;

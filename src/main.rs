@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
                                 send(&mut socket, reply).await.unwrap();
                             }
                             None => {
-                                let reply = RespValue::Null;
+                                let reply = RespValue::NullBulkString;
                                 send(&mut socket, reply).await.unwrap();
                             }
                         }
