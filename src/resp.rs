@@ -1,5 +1,6 @@
 use crate::{cursor::Cursor, cursor::Error};
 
+#[derive(Debug)]
 pub enum RespValue {
     Array(Vec<RespValue>),
     BigNumber(String),
@@ -455,7 +456,7 @@ mod tests {
     fn parse_null_bulk_string() {
         let input = b"$-1\r\n";
         let result = parse(input).unwrap();
-        assert!(matches!(result, RespValue::Null));
+        assert!(matches!(result, RespValue::NullBulkString));
     }
 
     #[test]

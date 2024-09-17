@@ -64,11 +64,15 @@ async fn main() -> anyhow::Result<()> {
                         let reply = RespValue::BulkString(arg);
                         send(&mut socket, reply).await.unwrap();
                     }
-                    Ok(Command::Set(key, value)) => {
+                    Ok(Command::Set(key, value, expiry)) => {
                         tracing::info!("Received SET: {:?} {:?}", key, value);
-                        let reply = RespValue::SimpleString("OK".to_string());
                         let mut state = state.lock().await;
-                        state.insert(key, value);
+                        state.insert(key.clone(), value);
+                        if let Some(expiry) = expiry {
+                            tracing::info!("Setting expiry for {:?} to {:?}", key, expiry);
+                            // TODO: Implement expiry
+                        }
+                        let reply = RespValue::SimpleString("OK".to_string());
                         send(&mut socket, reply).await.unwrap();
                     }
                     Ok(Command::Get(key)) => {
