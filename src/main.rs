@@ -16,16 +16,16 @@ use tokio::{
 
 mod commands;
 mod cursor;
+mod kv;
 mod resp;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+    kv::init();
 
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
     tracing::info!("Server listening on 127.0.0.1:6379");
-
-    let state = Arc::new(Mutex::new(HashMap::<String, String>::new()));
 
     loop {
         let (mut socket, _addr) = listener.accept().await?;
@@ -38,7 +38,6 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        let state = Arc::clone(&state);
         tokio::spawn(async move {
             let mut buf = [0; 1024];
 
@@ -46,8 +45,7 @@ async fn main() -> anyhow::Result<()> {
                 let n = socket
                     .read(&mut buf)
                     .await
-                    .context("Failed to read from socket")
-                    .unwrap();
+                    .expect("Failed to read from socket");
 
                 if n == 0 {
                     return;
@@ -57,42 +55,39 @@ async fn main() -> anyhow::Result<()> {
                     Ok(Command::Ping) => {
                         tracing::info!("Received PING");
                         let reply = RespValue::SimpleString("PONG".to_string());
-                        send(&mut socket, reply).await.unwrap();
+                        send(&mut socket, reply).await.expect("Failed to send PONG");
                     }
                     Ok(Command::Echo(arg)) => {
                         tracing::info!("Received ECHO: {:?}", arg);
                         let reply = RespValue::BulkString(arg);
-                        send(&mut socket, reply).await.unwrap();
+                        send(&mut socket, reply).await.expect("Failed to send ECHO");
                     }
                     Ok(Command::Set(key, value, expiry)) => {
-                        tracing::info!("Received SET: {:?} {:?}", key, value);
-                        let mut state = state.lock().await;
-                        state.insert(key.clone(), value);
-                        if let Some(expiry) = expiry {
-                            tracing::info!("Setting expiry for {:?} to {:?}", key, expiry);
-                            // TODO: Implement expiry
-                        }
+                        tracing::info!(?key, ?value, ?expiry, "Received SET");
+                        kv::set(&key, value, expiry).await;
                         let reply = RespValue::SimpleString("OK".to_string());
-                        send(&mut socket, reply).await.unwrap();
+                        send(&mut socket, reply).await.expect("Failed to send OK");
                     }
                     Ok(Command::Get(key)) => {
-                        tracing::info!("Received GET: {:?}", key);
-                        let state = state.lock().await;
-                        match state.get(&key) {
+                        tracing::info!(?key, "Received GET");
+                        let value = kv::get(&key).await;
+                        match value {
                             Some(value) => {
                                 let reply = RespValue::BulkString(value.to_string());
-                                send(&mut socket, reply).await.unwrap();
+                                send(&mut socket, reply).await.expect("Failed to send GET");
                             }
                             None => {
                                 let reply = RespValue::NullBulkString;
-                                send(&mut socket, reply).await.unwrap();
+                                send(&mut socket, reply).await.expect("Failed to send GET");
                             }
                         }
                     }
                     Err(e) => {
                         tracing::warn!("Error: {:?}", e);
                         let reply = RespValue::Error("unknown command".to_string());
-                        send(&mut socket, reply).await.unwrap();
+                        send(&mut socket, reply)
+                            .await
+                            .expect("Failed to send ERROR");
                     }
                 }
             }

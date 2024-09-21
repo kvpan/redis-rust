@@ -70,7 +70,7 @@ impl Command {
 
                 for chunk in arr[3..].chunks(2) {
                     if let [RespValue::BulkString(opt), RespValue::BulkString(val)] = chunk {
-                        if opt == "PX" {
+                        if opt.to_ascii_uppercase() == "PX" {
                             expiry = Some(val.parse::<u64>().unwrap());
                         }
                     }
