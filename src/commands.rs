@@ -4,10 +4,11 @@ use crate::resp::RespValue;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    Ping,
+    ConfigGet(String),
     Echo(String),
-    Set(String, String, Option<u64>),
     Get(String),
+    Ping,
+    Set(String, String, Option<u64>),
 }
 
 impl Command {
@@ -31,7 +32,40 @@ impl Command {
         };
 
         match cmd.to_ascii_uppercase().as_str() {
-            "PING" => Ok(Command::Ping),
+            "CONFIG" => {
+                if arr.len() < 3 {
+                    return Err(RespError::InvalidInput(
+                        String::from_utf8(bytes.to_vec()).unwrap(),
+                    ));
+                }
+
+                let RespValue::BulkString(subcmd) = arr.get(1).unwrap() else {
+                    return Err(RespError::InvalidInput(
+                        String::from_utf8(bytes.to_vec()).unwrap(),
+                    ));
+                };
+
+                match subcmd.to_ascii_uppercase().as_str() {
+                    "GET" => {
+                        if arr.len() != 3 {
+                            return Err(RespError::InvalidInput(
+                                String::from_utf8(bytes.to_vec()).unwrap(),
+                            ));
+                        }
+
+                        let RespValue::BulkString(key) = arr.get(2).unwrap() else {
+                            return Err(RespError::InvalidInput(
+                                String::from_utf8(bytes.to_vec()).unwrap(),
+                            ));
+                        };
+
+                        Ok(Command::ConfigGet(key.to_string()))
+                    }
+                    _ => Err(RespError::InvalidInput(
+                        String::from_utf8(bytes.to_vec()).unwrap(),
+                    )),
+                }
+            }
             "ECHO" => {
                 if arr.len() != 2 {
                     return Err(RespError::InvalidInput(
@@ -47,6 +81,22 @@ impl Command {
 
                 Ok(Command::Echo(msg.to_string()))
             }
+            "GET" => {
+                if arr.len() != 2 {
+                    return Err(RespError::InvalidInput(
+                        String::from_utf8(bytes.to_vec()).unwrap(),
+                    ));
+                }
+
+                let RespValue::BulkString(key) = arr.get(1).unwrap() else {
+                    return Err(RespError::InvalidInput(
+                        String::from_utf8(bytes.to_vec()).unwrap(),
+                    ));
+                };
+
+                Ok(Command::Get(key.to_string()))
+            }
+            "PING" => Ok(Command::Ping),
             "SET" => {
                 if arr.len() < 3 {
                     return Err(RespError::InvalidInput(
@@ -77,21 +127,6 @@ impl Command {
                 }
 
                 Ok(Command::Set(key.to_string(), value.to_string(), expiry))
-            }
-            "GET" => {
-                if arr.len() != 2 {
-                    return Err(RespError::InvalidInput(
-                        String::from_utf8(bytes.to_vec()).unwrap(),
-                    ));
-                }
-
-                let RespValue::BulkString(key) = arr.get(1).unwrap() else {
-                    return Err(RespError::InvalidInput(
-                        String::from_utf8(bytes.to_vec()).unwrap(),
-                    ));
-                };
-
-                Ok(Command::Get(key.to_string()))
             }
             _ => Err(RespError::InvalidInput(
                 String::from_utf8(bytes.to_vec()).unwrap(),

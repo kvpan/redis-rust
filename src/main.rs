@@ -14,7 +14,9 @@ use tokio::{
     sync::Mutex,
 };
 
+mod cli;
 mod commands;
+mod config;
 mod cursor;
 mod kv;
 mod resp;
@@ -22,7 +24,15 @@ mod resp;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+    config::init();
+    cli::init();
     kv::init();
+
+    tracing::info!(
+        dir = config::get_dir(),
+        dbfilename = config::get_dbfilename(),
+        "Starting server"
+    );
 
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
     tracing::info!("Server listening on 127.0.0.1:6379");
@@ -52,13 +62,37 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 match Command::from_bytes(&buf[..n]) {
+                    Ok(Command::ConfigGet(key)) => {
+                        tracing::info!(?key, "Received CONFIG GET");
+                        match key.as_str() {
+                            "dir" => {
+                                let reply = RespValue::Array(vec![
+                                    RespValue::SimpleString("dir".to_string()),
+                                    RespValue::BulkString(config::get_dir().to_string()),
+                                ]);
+                                send(&mut socket, reply)
+                                    .await
+                                    .expect("Failed to send CONFIG GET");
+                            }
+                            "dbfilename" => {
+                                let reply = RespValue::Array(vec![
+                                    RespValue::SimpleString("dbfilename".to_string()),
+                                    RespValue::BulkString(config::get_dbfilename().to_string()),
+                                ]);
+                                send(&mut socket, reply)
+                                    .await
+                                    .expect("Failed to send CONFIG GET");
+                            }
+                            _ => {}
+                        }
+                    }
                     Ok(Command::Ping) => {
                         tracing::info!("Received PING");
                         let reply = RespValue::SimpleString("PONG".to_string());
                         send(&mut socket, reply).await.expect("Failed to send PONG");
                     }
                     Ok(Command::Echo(arg)) => {
-                        tracing::info!("Received ECHO: {:?}", arg);
+                        tracing::info!(?arg, "Received ECHO");
                         let reply = RespValue::BulkString(arg);
                         send(&mut socket, reply).await.expect("Failed to send ECHO");
                     }
@@ -82,8 +116,8 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!("Error: {:?}", e);
+                    Err(error) => {
+                        tracing::warn!(?error, "Error");
                         let reply = RespValue::Error("unknown command".to_string());
                         send(&mut socket, reply)
                             .await
